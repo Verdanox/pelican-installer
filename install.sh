@@ -126,7 +126,6 @@ setup_nginx() {
     echo -n "What is your FQDN? (Domain or IP) [Press Enter for $SERVER_IP]: "
     read FQDN
     
-    # Use server IP if no FQDN provided
     if [[ -z "$FQDN" ]]; then
         FQDN=$SERVER_IP
     fi
@@ -216,7 +215,6 @@ main() {
     echo -e "${GREEN}Made by: Verdanox${NC}"
     echo ""
     
-    # Pre-installation checks
     check_root
     detect_os
     
@@ -225,7 +223,9 @@ main() {
     echo -n "Do you want to continue? [y/N]: "
     read CONFIRM
     
-    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    CONFIRM=$(echo "$CONFIRM" | tr '[:upper:]' '[:lower:]')
+    
+    if [[ "$CONFIRM" != "y" && "$CONFIRM" != "yes" ]]; then
         print_error "Installation cancelled by user"
         exit 1
     fi
