@@ -195,10 +195,9 @@ display_completion() {
     print_success "Pelican Panel installation completed successfully!"
     echo ""
     print_warning "Next steps:"
-    echo "1. Visit http://$FQDN in your browser"
+    echo "1. Visit http://$FQDN/installer in your browser"
     echo "2. Complete the web-based setup"
-    echo "3. Configure your database settings"
-    echo "4. Create your admin account"
+    echo "3. Create your admin account"
     echo ""
     print_warning "Important: Consider setting up SSL/TLS certificates for production use"
 }
