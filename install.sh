@@ -213,13 +213,9 @@ main() {
     
     print_warning "This script will install Pelican Panel on your server."
     print_warning "Operating System: $OS $VERSION"
-    echo -n "Do you want to continue? [y/N]: "
-    read CONFIRM < /dev/tty
+    print_warning "Installation will start in 5 seconds... Press Ctrl+C to cancel"
     
-    if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" && "$CONFIRM" != "yes" && "$CONFIRM" != "YES" ]]; then
-        print_error "Installation cancelled by user"
-        exit 1
-    fi
+    sleep 5
     
     echo ""
     
