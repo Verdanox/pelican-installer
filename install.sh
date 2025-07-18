@@ -1,11 +1,5 @@
 #!/bin/bash
 
-# Pelican Panel Installation Script
-# Made by: Verdanox
-# Version: 1.0
-
-set -e
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -144,7 +138,6 @@ server {
     location = /robots.txt  { access_log off; log_not_found off; }
     access_log off;
     error_log  /var/log/nginx/pelican.app-error.log error;
-    # allow larger file uploads and longer script runtimes
     client_max_body_size 100m;
     client_body_timeout 120s;
     sendfile off;
@@ -223,9 +216,7 @@ main() {
     echo -n "Do you want to continue? [y/N]: "
     read CONFIRM
     
-    CONFIRM=$(echo "$CONFIRM" | tr '[:upper:]' '[:lower:]')
-    
-    if [[ "$CONFIRM" != "y" && "$CONFIRM" != "yes" ]]; then
+    if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" && "$CONFIRM" != "yes" && "$CONFIRM" != "YES" ]]; then
         print_error "Installation cancelled by user"
         exit 1
     fi
