@@ -211,12 +211,8 @@ main() {
     check_root
     detect_os
     
-    print_warning "This script will install Pelican Panel on your server."
+    print_warning "Installing Pelican Panel on your server..."
     print_warning "Operating System: $OS $VERSION"
-    print_warning "Installation will start in 5 seconds... Press Ctrl+C to cancel"
-    
-    sleep 5
-    
     echo ""
     
     install_php
