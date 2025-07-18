@@ -1,13 +1,11 @@
 #!/bin/bash
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Status functions
 print_status() {
     echo -e "${BLUE}--------$1--------${NC}"
 }
@@ -24,7 +22,6 @@ print_warning() {
     echo -e "${YELLOW}⚠ $1${NC}"
 }
 
-# Check for root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         print_error "This script must be run as root (use sudo)"
@@ -32,7 +29,6 @@ check_root() {
     fi
 }
 
-# Detect OS (Ubuntu/Debian only)
 detect_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
@@ -49,12 +45,10 @@ detect_os() {
     fi
 }
 
-# Set PHP-FPM socket path
 set_php_socket() {
     PHP_FPM_SOCK="/run/php/php8.4-fpm.sock"
 }
 
-# Get server IP
 get_server_ip() {
     SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || curl -s icanhazip.com 2>/dev/null || echo "")
     if [[ -z "$SERVER_IP" ]]; then
@@ -65,7 +59,6 @@ get_server_ip() {
     fi
 }
 
-# Install PHP and extensions
 install_php() {
     print_status "Installing PHP 8.4 + Extensions..."
     apt update
@@ -73,19 +66,19 @@ install_php() {
     LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
     apt update
     apt install -y php8.4 php8.4-{cli,gd,mysql,pdo,mbstring,tokenizer,bcmath,xml,fpm,curl,zip,intl,sqlite3,common,fpm}
-    print_success "PHP 8.4 and extensions installed successfully"
+    systemctl enable php8.4-fpm
+    systemctl restart php8.4-fpm
+    print_success "PHP 8.4 and extensions installed and PHP-FPM started"
 }
 
-# Install NGINX
 install_nginx() {
     print_status "Installing NGINX..."
     apt install -y nginx
     systemctl enable nginx
     systemctl start nginx
-    print_success "NGINX installed successfully"
+    print_success "NGINX installed and started"
 }
 
-# Create directories
 create_directories() {
     print_status "Creating directories..."
     mkdir -p /var/www/pelican
@@ -93,7 +86,6 @@ create_directories() {
     print_success "Directory /var/www/pelican created"
 }
 
-# Install Panel files
 install_files() {
     print_status "Installing files..."
     cd /var/www/pelican || exit
@@ -101,7 +93,6 @@ install_files() {
     print_success "Pelican Panel files downloaded and extracted"
 }
 
-# Install Composer
 install_composer() {
     print_status "Installing Composer..."
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
@@ -110,7 +101,6 @@ install_composer() {
     print_success "Composer installed and dependencies resolved"
 }
 
-# Setup NGINX configuration
 setup_nginx() {
     print_status "Setting up NGINX..."
     rm -f /etc/nginx/sites-enabled/default
@@ -148,7 +138,7 @@ server {
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param PHP_VALUE "upload_max_filesize = 100M \n post_max_size=100M";
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$script
         fastcgi_param HTTP_PROXY "";
         fastcgi_intercept_errors off;
         fastcgi_buffer_size 16k;
@@ -167,7 +157,6 @@ EOF
     print_success "NGINX configuration created and enabled for $FQDN"
 }
 
-# Create .env file
 create_env() {
     print_status "Creating .env..."
     cd /var/www/pelican || exit
@@ -175,7 +164,6 @@ create_env() {
     print_success ".env file created"
 }
 
-# Set permissions
 set_permissions() {
     print_status "Setting permissions..."
     cd /var/www/pelican || exit
@@ -184,7 +172,6 @@ set_permissions() {
     print_success "Permissions set correctly"
 }
 
-# Display completion message
 display_completion() {
     print_status "The Web installer is now available."
     echo ""
@@ -198,7 +185,6 @@ display_completion() {
     print_warning "Important: Consider setting up SSL/TLS certificates for production use"
 }
 
-# Main function
 main() {
     echo -e "${BLUE}--------PELICAN INSTALLATION SCRIPT--------${NC}"
     echo -e "${GREEN}Made by: Verdanox${NC}"
