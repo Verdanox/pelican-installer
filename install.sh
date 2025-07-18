@@ -118,7 +118,7 @@ setup_nginx() {
     echo ""
     print_warning "Current server IP: $SERVER_IP"
     echo -n "What is your FQDN? (Domain or IP) [Press Enter for $SERVER_IP]: "
-    read FQDN
+    read FQDN < /dev/tty
     
     if [[ -z "$FQDN" ]]; then
         FQDN=$SERVER_IP
@@ -214,7 +214,7 @@ main() {
     print_warning "This script will install Pelican Panel on your server."
     print_warning "Operating System: $OS $VERSION"
     echo -n "Do you want to continue? [y/N]: "
-    read CONFIRM
+    read CONFIRM < /dev/tty
     
     if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" && "$CONFIRM" != "yes" && "$CONFIRM" != "YES" ]]; then
         print_error "Installation cancelled by user"
