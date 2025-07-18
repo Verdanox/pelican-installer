@@ -32,28 +32,26 @@ check_root() {
 detect_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
-        OS_NAME=$NAME
+        OS=$NAME
         VERSION=$VERSION_ID
     else
         print_error "Cannot detect operating system"
         exit 1
     fi
-
-    if [[ "$OS_NAME" != *"Ubuntu"* ]] && [[ "$OS_NAME" != *"Debian"* ]]; then
+    
+    if [[ "$OS" != *"Ubuntu"* ]] && [[ "$OS" != *"Debian"* ]]; then
         print_error "This script only supports Ubuntu and Debian"
         exit 1
     fi
 }
 
-set_php_socket() {
-    PHP_FPM_SOCK="/run/php/php8.4-fpm.sock"
-}
-
 get_server_ip() {
     SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || curl -s icanhazip.com 2>/dev/null || echo "")
+    
     if [[ -z "$SERVER_IP" ]]; then
         SERVER_IP=$(hostname -I | awk '{print $1}')
     fi
+    
     if [[ -z "$SERVER_IP" ]]; then
         SERVER_IP="localhost"
     fi
@@ -61,58 +59,71 @@ get_server_ip() {
 
 install_php() {
     print_status "Installing PHP 8.4 + Extensions..."
+    
     apt update
     apt install -y software-properties-common ca-certificates lsb-release apt-transport-https
+    
     LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
     apt update
+    
     apt install -y php8.4 php8.4-{cli,gd,mysql,pdo,mbstring,tokenizer,bcmath,xml,fpm,curl,zip,intl,sqlite3,common,fpm}
-    systemctl enable php8.4-fpm
-    systemctl restart php8.4-fpm
-    print_success "PHP 8.4 and extensions installed and PHP-FPM started"
+    
+    print_success "PHP 8.4 and extensions installed successfully"
 }
 
 install_nginx() {
     print_status "Installing NGINX..."
+    
     apt install -y nginx
     systemctl enable nginx
     systemctl start nginx
-    print_success "NGINX installed and started"
+    
+    print_success "NGINX installed successfully"
 }
 
 create_directories() {
-    print_status "Creating directories..."
+    print_status "Creating Directories..."
+    
     mkdir -p /var/www/pelican
-    cd /var/www/pelican || exit
+    cd /var/www/pelican
+    
     print_success "Directory /var/www/pelican created"
 }
 
 install_files() {
-    print_status "Installing files..."
-    cd /var/www/pelican || exit
+    print_status "Installing Files..."
+    
     curl -L https://github.com/pelican-dev/panel/releases/latest/download/panel.tar.gz | tar -xzv
+    
     print_success "Pelican Panel files downloaded and extracted"
 }
 
 install_composer() {
     print_status "Installing Composer..."
+    
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-    cd /var/www/pelican || exit
+    
+    cd /var/www/pelican
     COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
+    
     print_success "Composer installed and dependencies resolved"
 }
 
 setup_nginx() {
     print_status "Setting up NGINX..."
+    
     rm -f /etc/nginx/sites-enabled/default
+    
     get_server_ip
     echo ""
     print_warning "Current server IP: $SERVER_IP"
     echo -n "What is your FQDN? (Domain or IP) [Press Enter for $SERVER_IP]: "
-    read -r FQDN < /dev/tty
+    read FQDN < /dev/tty
+    
     if [[ -z "$FQDN" ]]; then
         FQDN=$SERVER_IP
     fi
-    set_php_socket
+    
     cat > /etc/nginx/sites-available/pelican.conf << EOF
 server {
     listen 80;
@@ -120,7 +131,6 @@ server {
     root /var/www/pelican/public;
     index index.html index.htm index.php;
     charset utf-8;
-
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
@@ -131,14 +141,13 @@ server {
     client_max_body_size 100m;
     client_body_timeout 120s;
     sendfile off;
-
     location ~ \.php$ {
         fastcgi_split_path_info ^(.+\.php)(/.+)$;
-        fastcgi_pass unix:$PHP_FPM_SOCK;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param PHP_VALUE "upload_max_filesize = 100M \n post_max_size=100M";
-        fastcgi_param SCRIPT_FILENAME \$document_root\$script
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param HTTP_PROXY "";
         fastcgi_intercept_errors off;
         fastcgi_buffer_size 16k;
@@ -152,23 +161,31 @@ server {
     }
 }
 EOF
+    
     ln -s /etc/nginx/sites-available/pelican.conf /etc/nginx/sites-enabled/pelican.conf
-    nginx -t && systemctl restart nginx
+    
+    nginx -t
+    systemctl restart nginx
+    
     print_success "NGINX configuration created and enabled for $FQDN"
 }
 
 create_env() {
     print_status "Creating .env..."
-    cd /var/www/pelican || exit
+    
+    cd /var/www/pelican
     php artisan p:environment:setup
+    
     print_success ".env file created"
 }
 
 set_permissions() {
-    print_status "Setting permissions..."
-    cd /var/www/pelican || exit
+    print_status "Giving Permissions..."
+    
+    cd /var/www/pelican
     chmod -R 755 storage/* bootstrap/cache/
     chown -R www-data:www-data /var/www/pelican
+    
     print_success "Permissions set correctly"
 }
 
@@ -189,11 +206,14 @@ main() {
     echo -e "${BLUE}--------PELICAN INSTALLATION SCRIPT--------${NC}"
     echo -e "${GREEN}Made by: Verdanox${NC}"
     echo ""
+    
     check_root
     detect_os
+    
     print_warning "Installing Pelican Panel on your server..."
-    print_warning "Operating System: $OS_NAME $VERSION"
+    print_warning "Operating System: $OS $VERSION"
     echo ""
+    
     install_php
     install_nginx
     create_directories
