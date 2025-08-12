@@ -6,6 +6,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+INSTALL_REDIS=false
+REDIS_PASSWORD=""
+
 print_status() {
     echo -e "${BLUE}--------$1--------${NC}"
 }
@@ -58,6 +61,38 @@ get_server_ip() {
     fi
 }
 
+generate_password() {
+    openssl rand -base64 32 | tr -d "=+/" | cut -c1-32
+}
+
+ask_redis_installation() {
+    print_status "Redis Installation Option"
+    echo "Do you want to install Redis? (For Caching, Queue etc.)"
+    echo "1. Install Redis"
+    echo "2. Don't Install Redis"
+    echo ""
+    while true; do
+        echo -n "Please select an option [1-2]: "
+        read -r choice < /dev/tty
+        case $choice in
+            1)
+                INSTALL_REDIS=true
+                print_success "Redis installation selected"
+                break
+                ;;
+            2)
+                INSTALL_REDIS=false
+                print_success "Skipping Redis installation"
+                break
+                ;;
+            *)
+                print_error "Invalid option. Please select 1 or 2."
+                ;;
+        esac
+    done
+    echo ""
+}
+
 install_php() {
     print_status "Installing PHP 8.4 + Extensions..."
     
@@ -65,11 +100,9 @@ install_php() {
     apt install -y software-properties-common ca-certificates lsb-release apt-transport-https curl gnupg2
     
     if [[ "$OS_ID" == "ubuntu" ]]; then
-        # Ubuntu - use Ondrej's PPA
         LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
         apt update
     elif [[ "$OS_ID" == "debian" ]]; then
-        # Debian - use Ondrej's repository
         curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /usr/share/keyrings/php-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/php-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
         apt update
@@ -349,6 +382,56 @@ set_permissions() {
     print_success "Permissions set correctly"
 }
 
+install_redis() {
+    if [[ $INSTALL_REDIS != true ]]; then
+        return 0
+    fi
+    
+    print_status "Installing Redis..."
+    
+    curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/redis.list
+    
+    apt update -y
+    apt install -y redis-server
+    
+    systemctl enable --now redis-server
+    
+    REDIS_PASSWORD=$(generate_password)
+    
+    redis-cli ACL SETUSER default on >"$REDIS_PASSWORD" allcommands allkeys
+    
+    echo "requirepass $REDIS_PASSWORD" >> /etc/redis/redis.conf
+    
+    systemctl restart redis-server
+    
+    print_success "Redis installed and configured successfully"
+    print_warning "Redis Password: $REDIS_PASSWORD"
+    print_warning "Please save this password - you'll need it for Pelican Panel configuration"
+    
+    cat > /var/www/pelican/redis-credentials.txt << EOF
+Redis Installation Details:
+==========================
+Redis Password: $REDIS_PASSWORD
+Redis Host: 127.0.0.1
+Redis Port: 6379
+
+You can use these credentials in your Pelican Panel .env file:
+REDIS_HOST=127.0.0.1
+REDIS_PASSWORD=$REDIS_PASSWORD
+REDIS_PORT=6379
+CACHE_DRIVER=redis
+QUEUE_CONNECTION=redis
+SESSION_DRIVER=redis
+
+EOF
+    
+    chown www-data:www-data /var/www/pelican/redis-credentials.txt
+    chmod 600 /var/www/pelican/redis-credentials.txt
+    
+    print_success "Redis credentials saved to /var/www/pelican/redis-credentials.txt"
+}
+
 display_completion() {
     print_status "Installation Complete!"
     echo ""
@@ -364,6 +447,18 @@ display_completion() {
     
     echo "2. Complete the web-based setup"
     echo "3. Create your admin account"
+    
+    if [[ $INSTALL_REDIS == true ]]; then
+        echo "4. Configure Redis in your .env file using the credentials below"
+        echo ""
+        print_warning "Redis Configuration:"
+        echo "   Host: 127.0.0.1"
+        echo "   Port: 6379"
+        echo "   Password: $REDIS_PASSWORD"
+        echo ""
+        print_warning "Redis credentials are also saved in: /var/www/pelican/redis-credentials.txt"
+    fi
+    
     echo ""
     
     if [[ $USE_SSL != true ]] && is_valid_domain "$FQDN"; then
@@ -376,6 +471,10 @@ display_completion() {
     echo "- Change default passwords immediately"
     echo "- Keep your system updated regularly"
     echo "- Configure firewall rules as needed"
+    if [[ $INSTALL_REDIS == true ]]; then
+        echo "- Secure your Redis installation by limiting network access"
+        echo "- Consider configuring Redis with TLS if needed"
+    fi
 }
 
 main() {
@@ -390,6 +489,8 @@ main() {
     print_warning "Operating System: $OS $VERSION"
     echo ""
     
+    ask_redis_installation
+    
     install_php
     install_nginx
     create_directories
@@ -398,6 +499,9 @@ main() {
     setup_nginx
     create_env
     set_permissions
+    
+    install_redis
+    
     display_completion
 }
 
