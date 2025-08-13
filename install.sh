@@ -65,6 +65,198 @@ generate_password() {
     openssl rand -base64 32 | tr -d "=+/" | cut -c1-32
 }
 
+check_pelican_installation() {
+    if [[ -d "/var/www/pelican" ]] && [[ -f "/var/www/pelican/artisan" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+show_management_menu() {
+    print_status "Pelican Management Menu"
+    echo "Pelican Panel is already installed on this server."
+    echo ""
+    echo "What would you like to do?"
+    echo "1. Uninstall Pelican"
+    echo "2. Get Panel Logs"
+    echo "3. Fix Permissions"
+    echo "4. Change Panel Domain"
+    echo "5. Exit"
+    echo ""
+    
+    while true; do
+        echo -n "Please select an option [1-5]: "
+        read -r choice < /dev/tty
+        case $choice in
+            1)
+                uninstall_pelican
+                break
+                ;;
+            2)
+                get_panel_logs
+                break
+                ;;
+            3)
+                fix_permissions
+                break
+                ;;
+            4)
+                change_panel_domain
+                break
+                ;;
+            5)
+                print_success "Exiting..."
+                exit 0
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-5."
+                ;;
+        esac
+    done
+}
+
+uninstall_pelican() {
+    print_status "Uninstalling Pelican Panel"
+    echo ""
+    print_error "WARNING: This will completely remove Pelican Panel from your server!"
+    print_error "ALL PANEL DATA INCLUDING DATABASE WILL BE LOST!"
+    print_warning "Game servers will continue to exist but will no longer be managed by the panel."
+    echo ""
+    echo -n "Are you absolutely sure you want to uninstall Pelican Panel? (type 'YES' to confirm): "
+    read -r confirmation < /dev/tty
+    
+    if [[ "$confirmation" != "YES" ]]; then
+        print_warning "Uninstallation cancelled."
+        exit 0
+    fi
+    
+    print_status "Removing Pelican Panel files..."
+    
+    systemctl disable --now pelican-queue 2>/dev/null || true
+    rm -f /etc/systemd/system/pelican-queue.service 2>/dev/null || true
+    
+    rm -rf /var/www/pelican
+    
+    rm -f /etc/nginx/sites-enabled/pelican.conf
+    rm -f /etc/nginx/sites-available/pelican.conf
+    
+    systemctl restart nginx
+    
+    print_success "Pelican Panel has been completely removed from your server"
+    print_warning "Note: Database, PHP, Nginx, and other system packages were not removed"
+    print_warning "Game servers are still running but are no longer managed by the panel"
+}
+
+get_panel_logs() {
+    print_status "Retrieving Panel Logs"
+    
+    if [[ ! -d "/var/www/pelican/storage/logs" ]]; then
+        print_error "Panel logs directory not found"
+        exit 1
+    fi
+    
+    LOG_FILE="/var/www/pelican/storage/logs/laravel-$(date +%F).log"
+    
+    if [[ ! -f "$LOG_FILE" ]]; then
+        print_error "Today's log file not found: $LOG_FILE"
+        print_warning "Available log files:"
+        ls -la /var/www/pelican/storage/logs/laravel-*.log 2>/dev/null || print_error "No log files found"
+        exit 1
+    fi
+    
+    print_status "Uploading logs to logs.pelican.dev..."
+    
+    LOG_URL=$(tail -n 300 "$LOG_FILE" | curl --data-binary @- https://logs.pelican.dev 2>/dev/null)
+    
+    if [[ $? -eq 0 ]] && [[ -n "$LOG_URL" ]]; then
+        print_success "Logs uploaded successfully!"
+        echo "Log URL: $LOG_URL"
+    else
+        print_error "Failed to upload logs to logs.pelican.dev"
+        print_warning "Showing last 50 lines of today's log instead:"
+        echo ""
+        tail -n 50 "$LOG_FILE"
+    fi
+}
+
+fix_permissions() {
+    print_status "Fixing Pelican Panel Permissions"
+    
+    if [[ ! -d "/var/www/pelican" ]]; then
+        print_error "Pelican Panel directory not found"
+        exit 1
+    fi
+    
+    cd /var/www/pelican
+    
+    print_status "Setting correct file permissions..."
+    chmod -R 755 storage/* bootstrap/cache/ 2>/dev/null || true
+    
+    print_status "Setting correct ownership..."
+    chown -R www-data:www-data /var/www/pelican
+    
+    print_success "Permissions fixed successfully"
+    print_warning "If you're still experiencing permission issues, you may need to check SELinux settings or file system permissions"
+}
+
+change_panel_domain() {
+    print_status "Changing Panel Domain"
+    
+    if [[ ! -f "/etc/nginx/sites-available/pelican.conf" ]]; then
+        print_error "Pelican nginx configuration not found"
+        exit 1
+    fi
+    
+    CURRENT_DOMAIN=$(grep -m1 "server_name" /etc/nginx/sites-available/pelican.conf | awk '{print $2}' | sed 's/;//g')
+    
+    get_server_ip
+    echo ""
+    print_warning "Current domain/IP: $CURRENT_DOMAIN"
+    print_warning "Server IP: $SERVER_IP"
+    echo -n "Enter new domain or IP [Press Enter for $SERVER_IP]: "
+    read NEW_DOMAIN < /dev/tty
+    
+    if [[ -z "$NEW_DOMAIN" ]]; then
+        NEW_DOMAIN=$SERVER_IP
+    fi
+    
+    if [[ "$NEW_DOMAIN" == "$CURRENT_DOMAIN" ]]; then
+        print_warning "New domain is the same as current domain. No changes made."
+        exit 0
+    fi
+    
+    print_status "Updating nginx configuration..."
+    
+    cp /etc/nginx/sites-available/pelican.conf /etc/nginx/sites-available/pelican.conf.backup
+    
+    sed -i "s/server_name $CURRENT_DOMAIN;/server_name $NEW_DOMAIN;/g" /etc/nginx/sites-available/pelican.conf
+    
+    nginx -t
+    if [[ $? -eq 0 ]]; then
+        systemctl restart nginx
+        print_success "Domain changed from $CURRENT_DOMAIN to $NEW_DOMAIN"
+        print_success "Nginx restarted successfully"
+        
+        echo ""
+        print_warning "IMPORTANT: You may need to update the following:"
+        print_warning "1. Panel URL in your .env file (APP_URL)"
+        print_warning "2. Wings configuration files on all nodes"
+        print_warning "3. Any custom configurations that reference the old domain"
+        print_warning "4. SSL certificate if using a new domain"
+        
+        if [[ "$NEW_DOMAIN" != *"."* ]] && [[ "$NEW_DOMAIN" != "localhost" ]]; then
+            print_warning "You're using an IP address - SSL may not work properly"
+        fi
+    else
+        print_error "Nginx configuration test failed. Restoring backup..."
+        mv /etc/nginx/sites-available/pelican.conf.backup /etc/nginx/sites-available/pelican.conf
+        systemctl restart nginx
+        print_error "Domain change failed. Original configuration restored."
+        exit 1
+    fi
+}
+
 ask_redis_installation() {
     print_status "Redis Installation Option"
     echo "Do you want to install Redis? (For Caching, Queue etc.)"
@@ -484,6 +676,11 @@ main() {
     
     check_root
     detect_os
+    
+    if check_pelican_installation; then
+        show_management_menu
+        exit 0
+    fi
     
     print_warning "Installing Pelican Panel on your server..."
     print_warning "Operating System: $OS $VERSION"
