@@ -210,6 +210,183 @@ fix_permissions() {
     print_warning "If you're still experiencing permission issues, you may need to check SELinux settings or file system permissions"
 }
 
+install_redis_management() {
+    print_status "Redis Installation"
+    
+    if command -v redis-server &> /dev/null; then
+        print_warning "Redis is already installed on this system"
+        echo -n "Do you want to reconfigure Redis for Pelican? (y/N): "
+        read -r choice < /dev/tty
+        if [[ ! "$choice" =~ ^[Yy]$ ]]; then
+            print_success "Redis installation skipped"
+            return 0
+        fi
+    fi
+    
+    print_status "Installing Redis..."
+    
+    curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/redis.list
+    
+    apt update -y
+    apt install -y redis-server
+    
+    systemctl enable --now redis-server
+    
+    print_success "Redis installed successfully"
+    
+    REDIS_PASSWORD=$(generate_password)
+    
+    print_status "Configuring Redis authentication..."
+    
+    redis-cli ACL SETUSER default on >"$REDIS_PASSWORD" allcommands allkeys 2>/dev/null || {
+        print_warning "Failed to set Redis password via CLI, updating configuration file..."
+    }
+    
+    if ! grep -q "requirepass" /etc/redis/redis.conf; then
+        echo "requirepass $REDIS_PASSWORD" >> /etc/redis/redis.conf
+    else
+        sed -i "s/^requirepass.*/requirepass $REDIS_PASSWORD/" /etc/redis/redis.conf
+    fi
+    
+    if [[ -f /etc/redis/users.acl ]]; then
+        if grep -q "user default" /etc/redis/users.acl; then
+            sed -i "s/user default.*/user default on >$REDIS_PASSWORD allcommands allkeys/" /etc/redis/users.acl
+        else
+            echo "user default on >$REDIS_PASSWORD allcommands allkeys" >> /etc/redis/users.acl
+        fi
+    else
+        echo "user default on >$REDIS_PASSWORD allcommands allkeys" > /etc/redis/users.acl
+    fi
+    
+    systemctl restart redis-server
+    
+    print_success "Redis configured with authentication"
+    
+    cat > /var/www/pelican/redis-credentials.txt << EOF
+Redis Installation Details:
+==========================
+Redis Password: $REDIS_PASSWORD
+Redis Host: 127.0.0.1
+Redis Port: 6379
+
+You can use these credentials in your Pelican Panel .env file:
+REDIS_HOST=127.0.0.1
+REDIS_PASSWORD=$REDIS_PASSWORD
+REDIS_PORT=6379
+CACHE_DRIVER=redis
+QUEUE_CONNECTION=redis
+SESSION_DRIVER=redis
+
+EOF
+    
+    chown www-data:www-data /var/www/pelican/redis-credentials.txt
+    chmod 600 /var/www/pelican/redis-credentials.txt
+    
+    print_success "Redis credentials saved to /var/www/pelican/redis-credentials.txt"
+    
+    echo ""
+    print_warning "To complete the Redis setup for Pelican Panel, run these commands:"
+    echo "cd /var/www/pelican"
+    echo "php artisan p:redis:setup"
+    echo ""
+    print_warning "Redis Configuration Details:"
+    echo "Host: 127.0.0.1"
+    echo "Port: 6379"
+    echo "Password: $REDIS_PASSWORD"
+    echo ""
+    print_warning "Please save this password - you'll need it for Pelican Panel configuration"
+}
+
+update_panel() {
+    print_status "Updating Pelican Panel"
+    
+    if [[ ! -d "/var/www/pelican" ]]; then
+        print_error "Pelican Panel directory not found"
+        exit 1
+    fi
+    
+    echo ""
+    print_warning "This will update your Pelican Panel to the latest version"
+    print_warning "Make sure you have a backup of your panel before proceeding"
+    echo -n "Do you want to continue with the update? (y/N): "
+    read -r choice < /dev/tty
+    
+    if [[ ! "$choice" =~ ^[Yy]$ ]]; then
+        print_warning "Panel update cancelled"
+        exit 0
+    fi
+    
+    cd /var/www/pelican || {
+        print_error "Could not change to panel directory"
+        exit 1
+    }
+    
+    print_status "Putting Panel in Maintenance Mode..."
+    php artisan down
+    print_success "Panel is now in maintenance mode"
+    
+    print_status "Downloading Update..."
+    curl -L https://github.com/pelican-dev/panel/releases/latest/download/panel.tar.gz | tar -xzv
+    if [[ $? -eq 0 ]]; then
+        print_success "Update files downloaded successfully"
+    else
+        print_error "Failed to download update files"
+        php artisan up
+        exit 1
+    fi
+    
+    print_status "Giving Permissions..."
+    chmod -R 755 storage/* bootstrap/cache/ 2>/dev/null || true
+    print_success "File permissions updated"
+    
+    print_status "Updating Dependencies..."
+    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
+    if [[ $? -eq 0 ]]; then
+        print_success "Dependencies updated successfully"
+    else
+        print_error "Failed to update dependencies"
+        php artisan up
+        exit 1
+    fi
+    
+    print_status "Creating Storage Links..."
+    php artisan storage:link
+    print_success "Storage links created"
+    
+    print_status "Renewing Cache Components..."
+    php artisan optimize:clear
+    php artisan optimize
+    print_success "Cache components renewed"
+    
+    print_status "Updating Database..."
+    php artisan migrate --seed --force
+    if [[ $? -eq 0 ]]; then
+        print_success "Database updated successfully"
+    else
+        print_error "Database migration failed"
+        php artisan up
+        exit 1
+    fi
+    
+    print_status "Setting Permissions for Webserver..."
+    chown -R www-data:www-data /var/www/pelican
+    print_success "Webserver permissions set"
+    
+    print_status "Restarting Queue Workers..."
+    php artisan queue:restart
+    print_success "Queue workers restarted"
+    
+    print_status "Disabling Maintenance Mode..."
+    php artisan up
+    print_success "Panel is now live again"
+    
+    echo ""
+    print_success "Panel update completed successfully!"
+    print_warning "Please verify that your panel is working correctly"
+    print_warning "Check the panel logs if you encounter any issues"
+}
+
 change_panel_domain() {
     print_status "Changing Panel Domain"
     
@@ -248,7 +425,6 @@ change_panel_domain() {
             apt install -y certbot python3-certbot-nginx
         fi
         
-        # Check if SSL certificate already exists
         if check_ssl_certificate "$NEW_DOMAIN"; then
             print_success "SSL certificate already exists for $NEW_DOMAIN"
             USE_SSL=true
@@ -829,7 +1005,6 @@ install_redis_management() {
         sed -i "s/^requirepass.*/requirepass $REDIS_PASSWORD/" /etc/redis/redis.conf
     fi
     
-    # Update users.acl if it exists
     if [[ -f /etc/redis/users.acl ]]; then
         if grep -q "user default" /etc/redis/users.acl; then
             sed -i "s/user default.*/user default on >$REDIS_PASSWORD allcommands allkeys/" /etc/redis/users.acl
