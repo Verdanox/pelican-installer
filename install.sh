@@ -965,6 +965,8 @@ update_panel() {
     print_warning "Please verify that your panel is working correctly"
     print_warning "Check the panel logs if you encounter any issues"
 }
+
+display_completion() {
     print_status "Installation Complete!"
     echo ""
     print_success "Pelican Panel installation completed successfully!"
