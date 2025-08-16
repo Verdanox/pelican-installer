@@ -1,5 +1,8 @@
 #!/bin/bash
 
+alternate=true
+alternate_url="https://github.com/verdanox/pelican-last-stable/releases/latest/download/panel.tar.gz"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -53,7 +56,15 @@ get_server_ip() {
     SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || curl -s icanhazip.com 2>/dev/null || echo "")
     
     if [[ -z "$SERVER_IP" ]]; then
-        SERVER_IP=$(hostname -I | awk '{print $1}')
+        LOCAL_IPS=$(hostname -I 2>/dev/null)
+        for ip in $LOCAL_IPS; do
+            if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+                if [[ ! $ip =~ ^127\. ]] && [[ ! $ip =~ ^169\.254\. ]] && [[ ! $ip =~ ^::1$ ]] && [[ ! $ip =~ ^fe80: ]]; then
+                    SERVER_IP=$ip
+                    break
+                fi
+            fi
+        done
     fi
     
     if [[ -z "$SERVER_IP" ]]; then
@@ -289,7 +300,6 @@ server {
     access_log /var/log/nginx/pelican.app-access.log;
     error_log  /var/log/nginx/pelican.app-error.log error;
     
-    # allow larger file uploads and longer script runtimes
     client_max_body_size 100m;
     client_body_timeout 120s;
     sendfile off;
@@ -301,9 +311,7 @@ server {
     ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
     ssl_prefer_server_ciphers on;
     
-    # Security headers
-    # See https://hstspreload.org/ before uncommenting the line below.
-    # add_header Strict-Transport-Security "max-age=15768000; preload;";
+    add_header Strict-Transport-Security "max-age=15768000; preload;";
     add_header X-Content-Type-Options nosniff;
     add_header X-XSS-Protection "1; mode=block";
     add_header X-Robots-Tag none;
@@ -500,9 +508,14 @@ create_directories() {
 install_files() {
     print_status "Installing Files..."
     
-    curl -L https://github.com/pelican-dev/panel/releases/latest/download/panel.tar.gz | tar -xzv
-    
-    print_success "Pelican Panel files downloaded and extracted"
+    if [[ "$alternate" == true ]]; then
+        print_warning "ALTERNATE MODE: Downloading stable version for guaranteed functionality"
+        curl -L "$alternate_url" | tar -xzv
+        print_success "Pelican Panel stable version downloaded and extracted"
+    else
+        curl -L https://github.com/pelican-dev/panel/releases/latest/download/panel.tar.gz | tar -xzv
+        print_success "Pelican Panel latest version downloaded and extracted"
+    fi
 }
 
 install_composer() {
@@ -612,7 +625,6 @@ server {
     access_log /var/log/nginx/pelican.app-access.log;
     error_log  /var/log/nginx/pelican.app-error.log error;
     
-    # allow larger file uploads and longer script runtimes
     client_max_body_size 100m;
     client_body_timeout 120s;
     sendfile off;
@@ -624,9 +636,7 @@ server {
     ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
     ssl_prefer_server_ciphers on;
     
-    # Security headers
-    # See https://hstspreload.org/ before uncommenting the line below.
-    # add_header Strict-Transport-Security "max-age=15768000; preload;";
+    add_header Strict-Transport-Security "max-age=15768000; preload;";
     add_header X-Content-Type-Options nosniff;
     add_header X-XSS-Protection "1; mode=block";
     add_header X-Robots-Tag none;
@@ -971,6 +981,13 @@ display_completion() {
     echo ""
     print_success "Pelican Panel installation completed successfully!"
     echo ""
+    
+    if [[ "$alternate" == true ]]; then
+        print_warning "ALTERNATE MODE: Stable version installed for guaranteed functionality"
+        print_warning "You can update to the latest version by re-running this script and choosing 'Update Panel'"
+        echo ""
+    fi
+    
     print_warning "Next steps:"
     
     if [[ $USE_SSL == true ]]; then
@@ -1014,6 +1031,11 @@ display_completion() {
 main() {
     echo -e "${BLUE}--------PELICAN INSTALLATION SCRIPT--------${NC}"
     echo -e "${GREEN}Made by: Verdanox${NC}"
+    
+    if [[ "$alternate" == true ]]; then
+        echo -e "${YELLOW}Running in ALTERNATE MODE${NC}"
+    fi
+    
     echo ""
     
     check_root
