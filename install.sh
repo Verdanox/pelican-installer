@@ -17,15 +17,15 @@ print_status() {
 }
 
 print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
+    echo -e "${GREEN}[SUCCESS] $1${NC}"
 }
 
 print_error() {
-    echo -e "${RED}✗ $1${NC}"
+    echo -e "${RED}[ERROR] $1${NC}"
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
+    echo -e "${YELLOW}[WARNING] $1${NC}"
 }
 
 check_root() {
@@ -87,7 +87,6 @@ check_pelican_installation() {
 get_github_releases() {
     print_status "Loading Releases..."
     
-    # Get releases from GitHub API
     RELEASES=$(curl -s "https://api.github.com/repos/pelican-dev/panel/releases" | grep -o '"tag_name": "[^"]*' | cut -d'"' -f4 | head -10)
     
     if [[ -z "$RELEASES" ]]; then
@@ -130,7 +129,6 @@ upgrade_downgrade_panel() {
         exit 1
     fi
     
-    # Get current version if possible
     if [[ -f "/var/www/pelican/config/app.php" ]]; then
         CURRENT_VERSION=$(grep -o "'version' => '[^']*'" /var/www/pelican/config/app.php | cut -d"'" -f4 2>/dev/null || echo "Unknown")
         print_warning "Current Panel version: $CURRENT_VERSION"
@@ -227,7 +225,6 @@ upgrade_downgrade_panel() {
 install_redis_management() {
     print_status "Redis Installation"
     
-    # Check if Redis is already installed
     if command -v redis-server &> /dev/null; then
         print_warning "Redis is already installed on this system"
         REDIS_VERSION=$(redis-server --version | head -1)
@@ -241,38 +238,31 @@ install_redis_management() {
     else
         print_status "Redis not found. Installing Redis..."
         
-        # Add Redis repository
         curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/redis.list
         
-        # Update package list and install Redis
         apt update -y
         apt install -y redis-server
         
-        # Enable and start Redis service
         systemctl enable --now redis-server
         
         print_success "Redis installed successfully"
     fi
     
-    # Generate new password
     REDIS_PASSWORD=$(generate_password)
     
     print_status "Configuring Redis authentication..."
     
-    # Set password using redis-cli
     redis-cli ACL SETUSER default on >"$REDIS_PASSWORD" allcommands allkeys 2>/dev/null || {
         print_warning "Failed to set Redis password via CLI, updating configuration files..."
     }
     
-    # Update redis.conf
     if ! grep -q "requirepass" /etc/redis/redis.conf; then
         echo "requirepass $REDIS_PASSWORD" >> /etc/redis/redis.conf
     else
         sed -i "s/^requirepass.*/requirepass $REDIS_PASSWORD/" /etc/redis/redis.conf
     fi
     
-    # Update or create users.acl
     if [[ -f /etc/redis/users.acl ]]; then
         if grep -q "user default" /etc/redis/users.acl; then
             sed -i "s/user default.*/user default on >$REDIS_PASSWORD allcommands allkeys/" /etc/redis/users.acl
@@ -283,10 +273,8 @@ install_redis_management() {
         echo "user default on >$REDIS_PASSWORD allcommands allkeys" > /etc/redis/users.acl
     fi
     
-    # Restart Redis to apply changes
     systemctl restart redis-server
     
-    # Verify Redis is running
     if systemctl is-active --quiet redis-server; then
         print_success "Redis configured with authentication"
     else
@@ -294,7 +282,6 @@ install_redis_management() {
         return 1
     fi
     
-    # Save credentials to file
     cat > /var/www/pelican/redis-credentials.txt << EOF
 Redis Installation Details:
 ==========================
