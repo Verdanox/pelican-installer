@@ -253,7 +253,7 @@ install_redis_management() {
     
     print_status "Configuring Redis authentication..."
     
-    redis-cli ACL SETUSER default on >"$REDIS_PASSWORD" allcommands allkeys 2>/dev/null || {
+    redis-cli ACL SETUSER default on ">$REDIS_PASSWORD" allcommands allkeys 2>/dev/null || {
         print_warning "Failed to set Redis password via CLI, updating configuration files..."
     }
     
@@ -1004,7 +1004,7 @@ install_redis() {
     
     REDIS_PASSWORD=$(generate_password)
     
-    redis-cli ACL SETUSER default on >"$REDIS_PASSWORD" allcommands allkeys
+    redis-cli ACL SETUSER default on ">$REDIS_PASSWORD" allcommands allkeys
     
     echo "requirepass $REDIS_PASSWORD" >> /etc/redis/redis.conf
     
