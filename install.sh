@@ -1,7 +1,10 @@
 #!/bin/bash
 
-alternate=true
-alternate_url="https://github.com/verdanox/pelican-last-stable/releases/latest/download/panel.tar.gz"
+if [ ! -t 0 ] && [ ! -e /dev/tty ]; then
+    echo "ERROR: This script requires an interactive terminal."
+    echo "Please run it in an interactive session or use: bash <(curl -sSL URL)"
+    exit 1
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -40,7 +43,7 @@ detect_os() {
         . /etc/os-release
         OS=$NAME
         VERSION=$VERSION_ID
-        OS_ID=$ID
+        OS_ID=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
     else
         print_error "Cannot detect operating system"
         exit 1
@@ -82,6 +85,31 @@ check_pelican_installation() {
     else
         return 1
     fi
+}
+
+sanitize_input() {
+    local input="$1"
+    input=$(echo "$input" | xargs)
+    input=$(echo "$input" | tr -cd '[:alnum:].-')
+    echo "$input"
+}
+
+is_valid_domain() {
+    local input="$1"
+    
+    if [[ $input =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        return 1
+    fi
+    
+    if [[ "$input" == "localhost" ]]; then
+        return 1
+    fi
+    
+    if [[ $input =~ \. ]] && [[ $input =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]+[a-zA-Z0-9]$ ]]; then
+        return 0
+    fi
+    
+    return 1
 }
 
 get_github_releases() {
@@ -155,19 +183,26 @@ upgrade_downgrade_panel() {
         exit 1
     }
     
+    print_status "Creating backup of current panel..."
+    BACKUP_DIR="/var/www/pelican_backup_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+    cp -r /var/www/pelican/* "$BACKUP_DIR/" 2>/dev/null || true
+    print_success "Backup created at: $BACKUP_DIR"
+    
     print_status "Putting Panel in Maintenance Mode..."
     php artisan down
     print_success "Panel is now in maintenance mode"
     
     print_status "Downloading Release $SELECTED_RELEASE..."
     DOWNLOAD_URL="https://github.com/pelican-dev/panel/releases/download/$SELECTED_RELEASE/panel.tar.gz"
-    curl -L "$DOWNLOAD_URL" | tar -xzv
-    if [[ $? -eq 0 ]]; then
+    
+    if curl -L "$DOWNLOAD_URL" | tar -xzv; then
         print_success "Release $SELECTED_RELEASE downloaded successfully"
     else
         print_error "Failed to download release $SELECTED_RELEASE"
         print_warning "Attempting to bring panel back online..."
         php artisan up
+        print_error "You can restore from backup at: $BACKUP_DIR"
         exit 1
     fi
     
@@ -176,12 +211,13 @@ upgrade_downgrade_panel() {
     print_success "File permissions updated"
     
     print_status "Updating Dependencies..."
-    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
-    if [[ $? -eq 0 ]]; then
+    if COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader; then
         print_success "Dependencies updated successfully"
     else
         print_error "Failed to update dependencies"
+        print_warning "Attempting to bring panel back online..."
         php artisan up
+        print_error "You can restore from backup at: $BACKUP_DIR"
         exit 1
     fi
     
@@ -195,12 +231,13 @@ upgrade_downgrade_panel() {
     print_success "Cache components cleared and optimized"
     
     print_status "Migrating Database..."
-    php artisan migrate --seed --force
-    if [[ $? -eq 0 ]]; then
+    if php artisan migrate --seed --force; then
         print_success "Database migrated successfully"
     else
         print_error "Database migration failed"
+        print_warning "Attempting to bring panel back online..."
         php artisan up
+        print_error "You can restore from backup at: $BACKUP_DIR"
         exit 1
     fi
     
@@ -220,6 +257,45 @@ upgrade_downgrade_panel() {
     print_success "Panel successfully changed to version $SELECTED_RELEASE!"
     print_warning "Please verify that your panel is working correctly"
     print_warning "Check the panel logs if you encounter any issues"
+    print_warning "Backup available at: $BACKUP_DIR"
+}
+
+configure_redis_password() {
+    local password="$1"
+    
+    print_status "Configuring Redis authentication..."
+    
+    REDIS_VERSION=$(redis-server --version | grep -oP 'v=\K[0-9]+' | head -1)
+    
+    if [[ "$REDIS_VERSION" -ge 6 ]]; then
+        if redis-cli ACL SETUSER default on ">$password" allcommands allkeys 2>/dev/null; then
+            print_success "Redis ACL configured successfully"
+        else
+            print_warning "Failed to set Redis password via ACL, will use requirepass instead"
+        fi
+    else
+        print_warning "Redis version is older than 6.0, using requirepass method"
+    fi
+    
+    if grep -q "^requirepass" /etc/redis/redis.conf; then
+        sed -i "s/^requirepass.*/requirepass $password/" /etc/redis/redis.conf
+        print_success "Updated existing requirepass in redis.conf"
+    elif grep -q "^# requirepass" /etc/redis/redis.conf; then
+        sed -i "s/^# requirepass.*/requirepass $password/" /etc/redis/redis.conf
+        print_success "Enabled requirepass in redis.conf"
+    else
+        echo "requirepass $password" >> /etc/redis/redis.conf
+        print_success "Added requirepass to redis.conf"
+    fi
+    
+    if [[ -f /etc/redis/users.acl ]]; then
+        if grep -q "user default" /etc/redis/users.acl; then
+            sed -i "s/user default.*/user default on >$password allcommands allkeys/" /etc/redis/users.acl
+        else
+            echo "user default on >$password allcommands allkeys" >> /etc/redis/users.acl
+        fi
+        print_success "Updated Redis ACL file"
+    fi
 }
 
 install_redis_management() {
@@ -251,27 +327,7 @@ install_redis_management() {
     
     REDIS_PASSWORD=$(generate_password)
     
-    print_status "Configuring Redis authentication..."
-    
-    redis-cli ACL SETUSER default on ">$REDIS_PASSWORD" allcommands allkeys 2>/dev/null || {
-        print_warning "Failed to set Redis password via CLI, updating configuration files..."
-    }
-    
-    if ! grep -q "requirepass" /etc/redis/redis.conf; then
-        echo "requirepass $REDIS_PASSWORD" >> /etc/redis/redis.conf
-    else
-        sed -i "s/^requirepass.*/requirepass $REDIS_PASSWORD/" /etc/redis/redis.conf
-    fi
-    
-    if [[ -f /etc/redis/users.acl ]]; then
-        if grep -q "user default" /etc/redis/users.acl; then
-            sed -i "s/user default.*/user default on >$REDIS_PASSWORD allcommands allkeys/" /etc/redis/users.acl
-        else
-            echo "user default on >$REDIS_PASSWORD allcommands allkeys" >> /etc/redis/users.acl
-        fi
-    else
-        echo "user default on >$REDIS_PASSWORD allcommands allkeys" > /etc/redis/users.acl
-    fi
+    configure_redis_password "$REDIS_PASSWORD"
     
     systemctl restart redis-server
     
@@ -474,10 +530,17 @@ change_panel_domain() {
     print_warning "Current domain/IP: $CURRENT_DOMAIN"
     print_warning "Server IP: $SERVER_IP"
     echo -n "Enter new domain or IP [Press Enter for $SERVER_IP]: "
-    read NEW_DOMAIN < /dev/tty
+    read RAW_INPUT < /dev/tty
+    
+    NEW_DOMAIN=$(sanitize_input "$RAW_INPUT")
     
     if [[ -z "$NEW_DOMAIN" ]]; then
         NEW_DOMAIN=$SERVER_IP
+    fi
+    
+    if [[ -z "$NEW_DOMAIN" ]]; then
+        print_error "Invalid domain/IP provided"
+        exit 1
     fi
     
     if [[ "$NEW_DOMAIN" == "$CURRENT_DOMAIN" ]]; then
@@ -631,8 +694,7 @@ EOF
         print_success "Standard NGINX configuration created for $NEW_DOMAIN"
     fi
     
-    nginx -t
-    if [[ $? -eq 0 ]]; then
+    if nginx -t 2>/dev/null; then
         systemctl restart nginx
         print_success "Domain changed from $CURRENT_DOMAIN to $NEW_DOMAIN"
         print_success "Nginx restarted successfully"
@@ -666,6 +728,40 @@ EOF
         print_error "Domain change failed. Original configuration restored."
         exit 1
     fi
+}
+
+main() {
+    echo -e "${BLUE}--------PELICAN INSTALLATION SCRIPT--------${NC}"
+    echo -e "${GREEN}Made by: Verdanox${NC}"
+    
+    echo ""
+    
+    check_root
+    detect_os
+    
+    if check_pelican_installation; then
+        show_management_menu
+        exit 0
+    fi
+    
+    print_warning "Installing Pelican Panel on your server..."
+    print_warning "Operating System: $OS $VERSION"
+    echo ""
+    
+    ask_redis_installation
+    
+    install_php
+    install_nginx
+    create_directories
+    install_files
+    install_composer
+    setup_nginx
+    create_env
+    set_permissions
+    
+    install_redis
+    
+    display_completion
 }
 
 ask_redis_installation() {
@@ -746,13 +842,11 @@ create_directories() {
 install_files() {
     print_status "Installing Files..."
     
-    if [[ "$alternate" == true ]]; then
-        print_warning "ALTERNATE MODE: Downloading stable version for guaranteed functionality"
-        curl -L "$alternate_url" | tar -xzv
-        print_success "Pelican Panel stable version downloaded and extracted"
-    else
-        curl -L https://github.com/pelican-dev/panel/releases/latest/download/panel.tar.gz | tar -xzv
+    if curl -L https://github.com/pelican-dev/panel/releases/latest/download/panel.tar.gz | tar -xzv; then
         print_success "Pelican Panel latest version downloaded and extracted"
+    else
+        print_error "Failed to download or extract panel files"
+        exit 1
     fi
 }
 
@@ -776,17 +870,9 @@ check_ssl_certificate() {
     fi
 }
 
-is_valid_domain() {
-    local domain=$1
-    if [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ $domain == "localhost" ]]; then
-        return 1
-    else
-        return 0
-    fi
-}
-
 setup_ssl() {
     local domain=$1
+    local nginx_was_running=false
     
     print_status "Setting up SSL certificate for $domain..."
     
@@ -797,17 +883,31 @@ setup_ssl() {
     
     print_warning "Automatically generating SSL certificate for $domain..."
     
-    systemctl stop nginx
+    if systemctl is-active --quiet nginx; then
+        nginx_was_running=true
+        systemctl stop nginx
+    fi
     
-    certbot certonly --standalone --agree-tos --no-eff-email --email admin@$domain -d $domain --non-interactive
-    
-    if [[ $? -eq 0 ]]; then
+    if certbot certonly --standalone --agree-tos --no-eff-email --email admin@$domain -d $domain --non-interactive; then
         print_success "SSL certificate obtained successfully"
-        systemctl start nginx
+        
+        if [[ "$nginx_was_running" == true ]]; then
+            systemctl start nginx
+        fi
         return 0
     else
-        print_error "Failed to obtain SSL certificate, falling back to HTTP configuration"
-        systemctl start nginx
+        print_error "Failed to obtain SSL certificate"
+        
+        if [[ "$nginx_was_running" == true ]]; then
+            print_status "Restarting Nginx..."
+            systemctl start nginx
+            
+            if systemctl is-active --quiet nginx; then
+                print_warning "Nginx restarted successfully, continuing with HTTP configuration"
+            else
+                print_error "Failed to restart Nginx after SSL failure"
+            fi
+        fi
         return 1
     fi
 }
@@ -821,9 +921,16 @@ setup_nginx() {
     echo ""
     print_warning "Current server IP: $SERVER_IP"
     echo -n "What is your FQDN? (Domain or IP) [Press Enter for $SERVER_IP]: "
-    read FQDN < /dev/tty
+    read RAW_INPUT < /dev/tty
+    
+    FQDN=$(sanitize_input "$RAW_INPUT")
     
     if [[ -z "$FQDN" ]]; then
+        FQDN=$SERVER_IP
+    fi
+    
+    if [[ -z "$FQDN" ]]; then
+        print_error "Invalid domain/IP provided, using server IP"
         FQDN=$SERVER_IP
     fi
     
@@ -958,8 +1065,7 @@ EOF
     
     ln -s /etc/nginx/sites-available/pelican.conf /etc/nginx/sites-enabled/pelican.conf
     
-    nginx -t
-    if [[ $? -eq 0 ]]; then
+    if nginx -t 2>/dev/null; then
         systemctl restart nginx
         print_success "NGINX configuration enabled and restarted successfully"
     else
@@ -1004,9 +1110,7 @@ install_redis() {
     
     REDIS_PASSWORD=$(generate_password)
     
-    redis-cli ACL SETUSER default on ">$REDIS_PASSWORD" allcommands allkeys
-    
-    echo "requirepass $REDIS_PASSWORD" >> /etc/redis/redis.conf
+    configure_redis_password "$REDIS_PASSWORD"
     
     systemctl restart redis-server
     
@@ -1061,17 +1165,24 @@ update_panel() {
         exit 1
     }
     
+    print_status "Creating backup of current panel..."
+    BACKUP_DIR="/var/www/pelican_backup_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+    cp -r /var/www/pelican/* "$BACKUP_DIR/" 2>/dev/null || true
+    print_success "Backup created at: $BACKUP_DIR"
+    
     print_status "Putting Panel in Maintenance Mode..."
     php artisan down
     print_success "Panel is now in maintenance mode"
     
     print_status "Downloading Update..."
-    curl -L https://github.com/pelican-dev/panel/releases/latest/download/panel.tar.gz | tar -xzv
-    if [[ $? -eq 0 ]]; then
+    if curl -L https://github.com/pelican-dev/panel/releases/latest/download/panel.tar.gz | tar -xzv; then
         print_success "Update files downloaded successfully"
     else
         print_error "Failed to download update files"
+        print_warning "Attempting to bring panel back online..."
         php artisan up
+        print_error "You can restore from backup at: $BACKUP_DIR"
         exit 1
     fi
     
@@ -1080,12 +1191,13 @@ update_panel() {
     print_success "File permissions updated"
     
     print_status "Updating Dependencies..."
-    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
-    if [[ $? -eq 0 ]]; then
+    if COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader; then
         print_success "Dependencies updated successfully"
     else
         print_error "Failed to update dependencies"
+        print_warning "Attempting to bring panel back online..."
         php artisan up
+        print_error "You can restore from backup at: $BACKUP_DIR"
         exit 1
     fi
     
@@ -1099,12 +1211,13 @@ update_panel() {
     print_success "Cache components renewed"
     
     print_status "Updating Database..."
-    php artisan migrate --seed --force
-    if [[ $? -eq 0 ]]; then
+    if php artisan migrate --seed --force; then
         print_success "Database updated successfully"
     else
         print_error "Database migration failed"
+        print_warning "Attempting to bring panel back online..."
         php artisan up
+        print_error "You can restore from backup at: $BACKUP_DIR"
         exit 1
     fi
     
@@ -1124,6 +1237,7 @@ update_panel() {
     print_success "Panel update completed successfully!"
     print_warning "Please verify that your panel is working correctly"
     print_warning "Check the panel logs if you encounter any issues"
+    print_warning "Backup available at: $BACKUP_DIR"
 }
 
 display_completion() {
@@ -1131,12 +1245,6 @@ display_completion() {
     echo ""
     print_success "Pelican Panel installation completed successfully!"
     echo ""
-    
-    if [[ "$alternate" == true ]]; then
-        print_warning "ALTERNATE MODE: Stable version installed for guaranteed functionality"
-        print_warning "You can update to the latest version by re-running this script and choosing 'Update Panel'"
-        echo ""
-    fi
     
     print_warning "Next steps:"
     
@@ -1176,44 +1284,6 @@ display_completion() {
         echo "- Secure your Redis installation by limiting network access"
         echo "- Consider configuring Redis with TLS if needed"
     fi
-}
-
-main() {
-    echo -e "${BLUE}--------PELICAN INSTALLATION SCRIPT--------${NC}"
-    echo -e "${GREEN}Made by: Verdanox${NC}"
-    
-    if [[ "$alternate" == true ]]; then
-        echo -e "${YELLOW}Running in ALTERNATE MODE${NC}"
-    fi
-    
-    echo ""
-    
-    check_root
-    detect_os
-    
-    if check_pelican_installation; then
-        show_management_menu
-        exit 0
-    fi
-    
-    print_warning "Installing Pelican Panel on your server..."
-    print_warning "Operating System: $OS $VERSION"
-    echo ""
-    
-    ask_redis_installation
-    
-    install_php
-    install_nginx
-    create_directories
-    install_files
-    install_composer
-    setup_nginx
-    create_env
-    set_permissions
-    
-    install_redis
-    
-    display_completion
 }
 
 main "$@"
